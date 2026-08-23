@@ -1,0 +1,343 @@
+# Sports Readiness Adviser
+
+An intelligent, evidence-based pre-participation screening tool that helps users assess their readiness to start a sport. Built with a deterministic rule engine, cascading multi-model Gemini AI, and a premium dark-themed UI.
+
+> **Demo**: This is a functional demo showcasing the screening flow, scoring engine, and AI-powered explanations for **Badminton** and **Swimming**.
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Screening Flow](#screening-flow)
+- [Scoring Engine](#scoring-engine)
+- [AI Integration](#ai-integration)
+- [Design Decisions & Rationale](#design-decisions--rationale)
+- [Tech Stack](#tech-stack)
+- [Getting Started](#getting-started)
+- [Testing](#testing)
+- [Deployment](#deployment)
+- [Project Structure](#project-structure)
+
+---
+
+## Overview
+
+The Sports Readiness Adviser is a screening tool — not a diagnostic system — that stratifies risk and routes users using the same principles employed by sports medicine bodies worldwide. It answers the question: *"Given my health profile, is it safe for me to start this sport at this intensity?"*
+
+### Key Principles
+
+1. **Screening, not diagnosis** — The system stratifies risk and routes users; it never names a medical condition or prescribes treatment.
+2. **Minimum viable questions** — Most users answer only 6 quick questions (Tier 0). Detailed follow-ups appear only when medically relevant.
+3. **Deterministic, auditable scoring** — A rule engine computes the result, so every recommendation traces back to exact inputs and thresholds. An LLM is used only to explain the result in plain language — it never decides the risk band.
+
+### Research Foundations
+
+The questionnaire structure, branching logic, and risk-stratification are modelled on established frameworks:
+
+- **PAR-Q+ / ePARmed-X+** — The international standard pre-participation screening questionnaire
+- **ACSM 2015 Preparticipation Screening Algorithm** — Stratifies by activity level, disease signs, and desired intensity
+- **Sport-specific research** — Badminton injury epidemiology (lower-limb dominance), swimming water-safety guidance (seizure intervals, chlorine-induced bronchoconstriction)
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    CLIENT (Browser)                      │
+│                                                          │
+│  ┌──────────┐  ┌──────────────┐  ┌───────────────────┐  │
+│  │  Multi-  │  │ Deterministic│  │  Gemini AI Layer   │  │
+│  │  Step UI │──│ Rule Engine  │──│  (2 models)        │  │
+│  │  Wizard  │  │              │  │                    │  │
+│  └──────────┘  └──────────────┘  └───────────────────┘  │
+│       │              │                    │              │
+│       ▼              ▼                    ▼              │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │           Decision Orchestrator                    │   │
+│  │  base_risk × sport_demand_weight = risk_index     │   │
+│  │  risk_index → band (Green / Yellow / Red)          │   │
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Component Responsibilities
+
+| Component | Responsibility | Owns the decision? |
+|-----------|---------------|-------------------|
+| **Rule Engine** | Encodes PAR-Q+/ACSM-derived screening logic; computes base risk score | ✅ Yes — deterministic |
+| **Sport-Demand Map** | Static lookup of cardio, joint, collision, thermal demand per sport/intensity | ✅ Yes — deterministic |
+| **LLM Explainer** | Converts rule-engine output into plain language; never decides the band | ❌ No — language & UX only |
+| **Decision Orchestrator** | Merges rule engine + sport-demand output into risk index and band | ✅ Yes — deterministic |
+
+---
+
+## Screening Flow
+
+The questionnaire uses **progressive disclosure** — each step is a separate view. The user never sees upcoming questions.
+
+```
+Landing Page
+    │
+    ▼
+Step 1: Basic Info (Age, Sex, Height/Weight + live BMI)
+    │
+    ▼
+Step 2: Sport Selection (Badminton or Swimming)
+    │
+    ▼
+Step 3: Activity Level & Target Intensity
+    │
+    ▼
+Step 4: Gate Question
+    │
+    ├── "No" → Skip to Result (fast path, <60 seconds)
+    │
+    └── "Yes" → Step 5: Category Selection
+                    │
+                    ▼
+                Step 6: Condition-Specific Questions (per domain)
+                    │
+                    ▼
+                Step 7: Sport-Specific Extension Questions
+                    │
+                    ▼
+                Result Page (AI-generated explanation)
+```
+
+### Tier Structure
+
+- **Tier 0** (all users): Age, sex, height/weight, sport, activity level, intensity, gate question
+- **Tier 1** (gate = Yes only): Domain-specific follow-ups — Cardiac, Respiratory, Metabolic, Musculoskeletal, Neurological, Pregnancy
+- **Sport Extensions**: Badminton (knee/ankle/shoulder/back) or Swimming (ear/skin/chlorine/water confidence)
+
+---
+
+## Scoring Engine
+
+### Formula
+
+```
+Base Risk Score = Tier 0 points + Tier 1 domain points (capped per domain) + sport-specific extension points
+Risk Index = Base Risk Score × Sport Demand Weight
+Band = Green | Yellow | Red (based on risk index thresholds)
+```
+
+### Tier 0 Points
+
+| Factor | Value | Points |
+|--------|-------|--------|
+| Age | Under 30 | +0 |
+| Age | 30-45 | +1 |
+| Age | 46-60 | +2 |
+| Age | 60+ | +3 |
+| BMI | Normal (18.5-24.9) | +0 |
+| BMI | Under/Overweight | +1 |
+| BMI | Obese (30+) | +2 |
+| Activity | Regular (3+/wk) | +0 |
+| Activity | Light (1-2/wk) | +1 |
+| Activity | Sedentary | +2 |
+
+**Maximum Tier 0 contribution: 7 points**
+
+### Sport Demand Weights
+
+| Sport | Intensity | Cardio | Impact/Joint | Collision | Thermal | Weight |
+|-------|-----------|--------|-------------|-----------|---------|--------|
+| Badminton | Recreational | Moderate | Moderate | Low | Moderate | **1.0** |
+| Badminton | Competitive | High | High | Low | High | **1.5** |
+| Swimming | Recreational | Moderate | Low | Low | Low | **0.8** |
+| Swimming | Competitive | High | Low-Moderate | Low | Low | **1.2** |
+
+### Band Thresholds
+
+| Risk Index | Band | Meaning |
+|-----------|------|---------|
+| Below 3 | 🟢 Green | Clear to start at the requested intensity |
+| 3 to <6 | 🟡 Yellow | Start with modifications; re-check in 4 weeks |
+| 6 or above | 🔴 Red | Doctor review required before starting |
+
+### Absolute Red Flags
+
+Certain answers bypass scoring entirely and route straight to Red:
+
+- Chest pain/breathlessness at rest or minimal exertion
+- Cardiac event or procedure under 3 months ago
+- Recurrent or unexplained fainting during exertion
+- Seizure within last 6 months
+- Seizure 6-12 months ago + swimming (drowning risk)
+- Severe blood sugar episode requiring assistance
+- Pregnancy with complications
+- Recent surgery (<3 months) + badminton (high-impact)
+- Recent ACL injury (<12 months) + competitive badminton
+
+### Domain Caps
+
+Each Tier 1 domain has a point cap to prevent mild flags from stacking unrealistically:
+
+- Cardiovascular: 8 points
+- Respiratory: 6 points
+- Metabolic: 6 points
+- Musculoskeletal: 6 points
+- Neurological: 6 points
+- Sport-specific: 8 points
+
+---
+
+## AI Integration
+
+The system uses a **cascading multi-model** approach with Google's Gemini AI:
+
+### Model 1: `gemini-2.0-flash` (Fast)
+- **Purpose**: Free-text triage tagging
+- **Use**: Tags user free-text health disclosures with urgency and category labels
+- **Key constraint**: Never scores or decides the band
+
+### Model 2: `gemini-2.5-flash` (Rich)
+- **Purpose**: Result explanation generation
+- **Use**: Converts the deterministic rule-engine output into warm, conversational, plain-language guidance
+- **Key constraint**: Grounded strictly in the rules that fired — never invents factors
+- **Fallback**: If the API is unavailable, a deterministic fallback explanation is provided
+
+### Why This Split?
+
+- The fast model handles quick, structured tasks (tagging)
+- The richer model handles nuanced language generation where tone and empathy matter
+- Neither model ever decides the risk band — that's always the deterministic rule engine
+
+---
+
+## Design Decisions & Rationale
+
+### Why No Backend?
+The rule engine is pure JavaScript — no server-side computation needed. Gemini API calls are made client-side. For a demo, this dramatically simplifies deployment (static hosting on GitHub Pages) while demonstrating the full screening flow.
+
+### Why Deterministic Scoring?
+This is the single most important design decision. An LLM hallucinating a medical clearance is the biggest liability exposure. By keeping all scoring deterministic and auditable, every output can be traced to exact inputs and thresholds. The LLM's role is limited to language — it explains, it never decides.
+
+### Why Progressive Disclosure?
+Users should never see questions they won't need to answer. The gate question at Tier 0 means ~70% of recreational users skip Tier 1 entirely. Those who do enter Tier 1 see only the domains they selected. This respects the user's time and reduces cognitive load.
+
+### Why Single Sport Selection?
+The design docs support multi-sport, but for this demo, single-sport focus allows the screening to be more specific and the result more actionable. Multi-sport would require showing comparative results across different demand profiles.
+
+### Doctor-in-the-Loop (Demo)
+The full design specifies an async doctor review console. For this demo, Red-band results show a prominent banner indicating that doctor review would be the next step in a production system.
+
+### Band Threshold at 6.0
+The design doc's worked examples show risk index 6.0 as Red (not Yellow), so the boundary is `>= 6 → Red`. This is validated by test case 8.2 where a 42-year-old with controlled hypertension at competitive badminton intensity (base score 4 × 1.5 = 6.0) routes to doctor review.
+
+### Structured Coaching → Competitive
+The sport demand table only defines Recreational and Competitive weights. "Structured coaching" maps to the Competitive demand weight, since it implies intensity-controlled training.
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Why |
+|-------|-----------|-----|
+| Build Tool | Vite | Fast, zero-config, optimized static output |
+| Language | Vanilla JavaScript (ES modules) | No framework overhead for a wizard-style flow |
+| Styling | Vanilla CSS | Full design control, dark theme with glassmorphism |
+| AI | Gemini API (2.0-flash + 2.5-flash) | Cascading multi-model per requirements |
+| Testing | Vitest | Native ESM support, fast, Vite-compatible |
+| Deployment | GitHub Pages | Free, simple, static hosting |
+| Fonts | Inter (Google Fonts) | Modern, highly readable UI font |
+
+---
+
+## Getting Started
+
+### Prerequisites
+- Node.js 18+
+- npm
+
+### Installation
+```bash
+git clone https://github.com/<your-username>/sports-readiness-adviser.git
+cd sports-readiness-adviser
+npm install
+```
+
+### Development
+```bash
+npm run dev
+# Opens at http://localhost:5173/
+```
+
+### Build
+```bash
+npm run build
+# Output in dist/
+```
+
+---
+
+## Testing
+
+The rule engine is covered by **42 tests** validating:
+
+- BMI calculation and categorization
+- Tier 0 scoring (all age, BMI, activity combinations)
+- Sport demand profile weights
+- Tier 1 absolute red flags (7 flag types)
+- Tier 1 point scoring with domain caps
+- Sport-specific extensions (badminton + swimming)
+- **All 9 worked examples from the design document** — these are the ground-truth validation
+- Band threshold boundaries
+- Review date assignment
+
+```bash
+npm test
+```
+
+```
+ ✓ src/engine/ruleEngine.test.js (42 tests) 11ms
+
+ Test Files  1 passed (1)
+      Tests  42 passed (42)
+```
+
+---
+
+## Deployment
+
+The app is deployed as a static site on GitHub Pages.
+
+```bash
+npm run build
+# Push the dist/ folder or configure GitHub Pages to build from the main branch
+```
+
+---
+
+## Project Structure
+
+```
+sports-readiness-adviser/
+├── Docs/                          # Design documents (NOT deployed)
+├── index.html                     # Entry point
+├── src/
+│   ├── main.js                    # App init, multi-step wizard, all UI rendering
+│   ├── style.css                  # Complete design system (dark theme, glassmorphism)
+│   ├── engine/
+│   │   ├── ruleEngine.js          # Deterministic scoring (Tier 0, Tier 1, orchestrator)
+│   │   └── ruleEngine.test.js     # 42 tests incl. all design doc worked examples
+│   ├── questionnaire/
+│   │   └── questions.js           # Question definitions, options, metadata
+│   └── ai/
+│       └── gemini.js              # Gemini API (2.0-flash + 2.5-flash)
+├── .gitignore                     # Excludes Docs/, node_modules, dist
+├── package.json
+└── README.md
+```
+
+---
+
+## Disclaimer
+
+This is a screening tool, not a medical diagnosis. It is designed to help users make an informed decision about starting a sport, using the same principles used by sports medicine bodies worldwide. If you have ongoing symptoms or concerns, please consult a doctor directly.
+
+All point values, caps, and thresholds are a defensible starting model based on cited research, not a clinically validated scale. They should be reviewed by a qualified sports-medicine advisor before any production use.
