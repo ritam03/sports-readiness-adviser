@@ -44,23 +44,20 @@ The questionnaire structure, branching logic, and risk-stratification are modell
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    CLIENT (Browser)                      │
-│                                                          │
-│  ┌──────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │  Multi-  │  │ Deterministic│  │  Gemini AI Layer   │  │
-│  │  Step UI │──│ Rule Engine  │──│  (2 models)        │  │
-│  │  Wizard  │  │              │  │                    │  │
-│  └──────────┘  └──────────────┘  └───────────────────┘  │
-│       │              │                    │              │
-│       ▼              ▼                    ▼              │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │           Decision Orchestrator                    │   │
-│  │  base_risk × sport_demand_weight = risk_index     │   │
-│  │  risk_index → band (Green / Yellow / Red)          │   │
-│  └──────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph Browser["CLIENT - Browser"]
+        UI["Multi-Step UI Wizard"]
+        RE["Deterministic Rule Engine"]
+        SD["Sport-Demand Map"]
+        DO["Decision Orchestrator"]
+        AI["Gemini AI Layer"]
+    end
+    API["Gemini API"]
+    UI --> RE --> DO
+    UI --> SD --> DO
+    DO --> AI <--> API
+    DO --> UI
 ```
 
 ### Component Responsibilities
@@ -74,44 +71,45 @@ The questionnaire structure, branching logic, and risk-stratification are modell
 
 ---
 
-## Screening Flow
+## Screening Flow (v3 — Three Independent Gates)
 
 The questionnaire uses **progressive disclosure** — each step is a separate view. The user never sees upcoming questions.
 
-```
-Landing Page
-    │
-    ▼
-Step 1: Basic Info (Age, Sex, Height/Weight + live BMI)
-    │
-    ▼
-Step 2: Sport Selection (Badminton or Swimming)
-    │
-    ▼
-Step 3: Activity Level & Target Intensity
-    │
-    ▼
-Step 4: Gate Question
-    │
-    ├── "No" → Skip to Result (fast path, <60 seconds)
-    │
-    └── "Yes" → Step 5: Category Selection
-                    │
-                    ▼
-                Step 6: Condition-Specific Questions (per domain)
-                    │
-                    ▼
-                Step 7: Sport-Specific Extension Questions
-                    │
-                    ▼
-                Result Page (AI-generated explanation)
+```mermaid
+flowchart TD
+    A[Landing Page] --> B["About You: Age, Sex, Height/Weight"]
+    B --> C[Sport Selection]
+    C --> D["Lifestyle: Activity Level, Intensity"]
+    D --> E["Three Health Background Questions"]
+    E --> G1{"Diagnosed conditions?"}
+    E --> G2{"Injuries or symptoms?"}
+    E --> G3{"Currently pregnant?"}
+    G1 -->|Yes| F1[Category + Domain Questions]
+    G2 -->|Yes| F3["Physical Health + Sport-Specific"]
+    G3 -->|Yes| F4[Pregnancy Questions]
+    G1 -->|No| MERGE[Scoring Engine]
+    G2 -->|No| MERGE
+    G3 -->|No| MERGE
+    F1 --> MERGE
+    F3 --> MERGE
+    F4 --> MERGE
+    MERGE --> R["Result Page + AI Explanation"]
 ```
 
-### Tier Structure
+### Three Independent Gates (v3 Design Correction)
 
-- **Tier 0** (all users): Age, sex, height/weight, sport, activity level, intensity, gate question
-- **Tier 1** (gate = Yes only): Domain-specific follow-ups — Cardiac, Respiratory, Metabolic, Musculoskeletal, Neurological, Pregnancy
-- **Sport Extensions**: Badminton (knee/ankle/shoulder/back) or Swimming (ear/skin/chlorine/water confidence)
+A single medical gate was replaced with three independent gates, each worded to match how people actually describe their situation:
+
+1. **Diagnosed conditions** — opens cardiac, respiratory, metabolic, neurological domains
+2. **Injuries, symptoms & infections** — opens musculoskeletal + sport-specific extension (catches undiagnosed issues)
+3. **Pregnancy** — asked directly to females of reproductive age, independent of other gates
+
+### Question Layers
+
+- **Universal** (all users): Age, sex, height/weight, sport, activity level, intensity, water confidence (swimming only)
+- **Condition follow-ups** (gate 1 = Yes): Cardiac, Respiratory, Metabolic, Neurological
+- **Physical health** (gate 2 = Yes): Generic musculoskeletal + sport-specific extension
+- **Pregnancy** (gate 3 = Yes): Trimester, complications
 
 ---
 
@@ -218,19 +216,13 @@ The rule engine is pure JavaScript — no server-side computation needed. Gemini
 This is the single most important design decision. An LLM hallucinating a medical clearance is the biggest liability exposure. By keeping all scoring deterministic and auditable, every output can be traced to exact inputs and thresholds. The LLM's role is limited to language — it explains, it never decides.
 
 ### Why Progressive Disclosure?
-Users should never see questions they won't need to answer. The gate question at Tier 0 means ~70% of recreational users skip Tier 1 entirely. Those who do enter Tier 1 see only the domains they selected. This respects the user's time and reduces cognitive load.
+Users should never see questions they won't need to answer. The three independent gates mean ~70% of recreational users skip follow-ups entirely. Those who do answer follow-ups see only the domains they selected. This respects the user's time and reduces cognitive load.
 
-### Why Single Sport Selection?
-The design docs support multi-sport, but for this demo, single-sport focus allows the screening to be more specific and the result more actionable. Multi-sport would require showing comparative results across different demand profiles.
+### Why Three Gates Instead of One?
+A single medical gate silently under-triggers for injuries people don't consider "diagnosed conditions," infections they manage themselves, and pregnancy (which isn't a diagnosis). Three independently-worded gates ensure an honest "No" to one never silently skips a genuinely relevant line of questioning.
 
 ### Doctor-in-the-Loop (Demo)
 The full design specifies an async doctor review console. For this demo, Red-band results show a prominent banner indicating that doctor review would be the next step in a production system.
-
-### Band Threshold at 6.0
-The design doc's worked examples show risk index 6.0 as Red (not Yellow), so the boundary is `>= 6 → Red`. This is validated by test case 8.2 where a 42-year-old with controlled hypertension at competitive badminton intensity (base score 4 × 1.5 = 6.0) routes to doctor review.
-
-### Structured Coaching → Competitive
-The sport demand table only defines Recreational and Competitive weights. "Structured coaching" maps to the Competitive demand weight, since it implies intensity-controlled training.
 
 ---
 
@@ -277,27 +269,26 @@ npm run build
 
 ## Testing
 
-The rule engine is covered by **42 tests** validating:
+The rule engine is covered by **35 tests** validating:
 
 - BMI calculation and categorization
-- Tier 0 scoring (all age, BMI, activity combinations)
+- Universal scoring (age, BMI, activity, water confidence)
 - Sport demand profile weights
-- Tier 1 absolute red flags (7 flag types)
-- Tier 1 point scoring with domain caps
-- Sport-specific extensions (badminton + swimming)
-- **All 9 worked examples from the design document** — these are the ground-truth validation
-- Band threshold boundaries
-- Review date assignment
+- Gate 1 absolute red flags and point scoring with domain caps
+- Gate 2 injury/symptom scoring and sport-specific extensions
+- Gate 3 pregnancy scoring
+- Three-gate independence (the v3 core fix)
+- **All 10 worked examples from the v3 design document**
 
 ```bash
 npm test
 ```
 
 ```
- ✓ src/engine/ruleEngine.test.js (42 tests) 11ms
+ ✓ src/engine/ruleEngine.test.js (35 tests) 9ms
 
  Test Files  1 passed (1)
-      Tests  42 passed (42)
+      Tests  35 passed (35)
 ```
 
 ---
@@ -320,16 +311,22 @@ sports-readiness-adviser/
 ├── Docs/                          # Design documents (NOT deployed)
 ├── index.html                     # Entry point
 ├── src/
-│   ├── main.js                    # App init, multi-step wizard, all UI rendering
-│   ├── style.css                  # Complete design system (dark theme, glassmorphism)
+│   ├── main.js                    # App orchestrator (step dispatch)
+│   ├── style.css                  # Design system (dark theme, glassmorphism)
+│   ├── ui/
+│   │   ├── helpers.js             # Shared UI utilities (header, nav, progress)
+│   │   ├── steps.js               # Landing, basic info, sport, activity steps
+│   │   ├── gates.js               # Three gate questions + domain follow-ups
+│   │   └── result.js              # AI-powered result page
 │   ├── engine/
-│   │   ├── ruleEngine.js          # Deterministic scoring (Tier 0, Tier 1, orchestrator)
-│   │   └── ruleEngine.test.js     # 42 tests incl. all design doc worked examples
+│   │   ├── ruleEngine.js          # Deterministic scoring (v3 three-gate)
+│   │   └── ruleEngine.test.js     # 35 tests incl. all v3 worked examples
 │   ├── questionnaire/
 │   │   └── questions.js           # Question definitions, options, metadata
 │   └── ai/
 │       └── gemini.js              # Gemini API (2.0-flash + 2.5-flash)
-├── .gitignore                     # Excludes Docs/, node_modules, dist
+├── ARCHITECTURE.md                # Full architecture with mermaid diagrams
+├── .gitignore
 ├── package.json
 └── README.md
 ```
